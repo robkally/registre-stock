@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "io.github.robkally.twa",
+        "sha256_cert_fingerprints": ["EF:14:8C:20:6A:D6:F6:2C:FE:3D:ED:57:59:63:63:C4:B9:AD:5B:8C:0A:67:7C:E5:85:15:98:A7:B6:A8:8A:96"]
+      }
+    }]
