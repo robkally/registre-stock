@@ -167,6 +167,16 @@
     padding:2px;
   }
   td input:focus{background:#f0f7f4; border-radius:5px;}
+  td input.pu-input{
+    width:92px;
+    font-size:16px;
+    font-weight:700;
+    padding:6px 4px;
+    background:#fffdf5;
+    border:1.5px solid #e6dcb8;
+    border-radius:6px;
+  }
+  td input.pu-input:focus{background:#fff8e0; border-color:var(--teal-dark);}
   td.computed{background:#f5f9f7; font-weight:600; color:var(--teal-dark);}
   td.final{background:#fef1ec; color:var(--coral); font-weight:700;}
   tr.total-row td{
@@ -724,8 +734,8 @@ function renderTable(){
       <td>${c.grosQte ? fmt(c.montantGros/c.grosQte) : '—'}</td>
       <td class="computed">${fmt(c.montantGros)}</td>
       <td class="sep-left"><button type="button" class="qty-btn" data-idx="${idx}" data-type="detail" title="Cliquer pour ajouter une vente au détail (casse) après avoir pesé le colis">${c.detailQte ? fmt(c.detailQte)+' kg' : '+ Ajouter'}${nbColis ? `<br><span style="font-size:9.5px;font-weight:400;opacity:.75;">${nbColis} colis</span>` : ''}</button></td>
-      <td><input type="number" step="1" value="${row.detailPU||''}" placeholder="PU/kg" data-idx="${idx}" data-f="detailPU"></td>
-      <td class="computed">${fmt(c.montantDetail)}</td>
+      <td><input type="number" step="1" class="pu-input" value="${row.detailPU||''}" placeholder="PU/kg" data-idx="${idx}" data-f="detailPU"></td>
+      <td class="computed" data-montant-idx="${idx}">${fmt(c.montantDetail)}</td>
       <td class="sep-left"><input type="number" step="1" value="${row.transferts}" data-idx="${idx}" data-f="transferts"></td>
       <td><input type="number" step="1" value="${row.dons}" data-idx="${idx}" data-f="dons"></td>
       <td class="computed">${fmtQty(c.stockSorti, row.unit)}</td>
@@ -746,6 +756,11 @@ function renderTable(){
       const idx = +e.target.dataset.idx;
       const f = e.target.dataset.f;
       currentRecord.rows[idx][f] = parseFloat(e.target.value)||0;
+      if(f==='detailPU'){
+        // Mise à jour immédiate du montant, sans reconstruire tout le tableau (le focus reste dans le champ)
+        const montantCell = tbody.querySelector(`[data-montant-idx="${idx}"]`);
+        if(montantCell) montantCell.textContent = fmt(computeRow(currentRecord.rows[idx]).montantDetail);
+      }
       scheduleAutosave();
     });
     inp.addEventListener('keydown', e=>{
@@ -1453,10 +1468,20 @@ document.getElementById('fileReadyCloseBtn').addEventListener('click', ()=>{
   pendingFileUrl = null;
 });
 
+function requireCurrentRecord(){
+  if(!currentRecord){
+    toast("Aucune fiche chargée pour cette date — attends le chargement ou change de date.");
+    return false;
+  }
+  return true;
+}
+
 document.getElementById('exportImgBtn').addEventListener('click', async ()=>{
-  const sheet = buildExportSheet();
-  document.body.appendChild(sheet);
+  if(!requireCurrentRecord()) return;
+  let sheet;
   try{
+    sheet = buildExportSheet();
+    document.body.appendChild(sheet);
     const canvas = await html2canvas(sheet, {scale:2, backgroundColor:'#ffffff', useCORS:true});
     const filename = 'fiche_'+currentRecord.date+'.png';
     const dataUrl = canvas.toDataURL('image/png');
@@ -1469,11 +1494,12 @@ document.getElementById('exportImgBtn').addEventListener('click', async ()=>{
     toast('Erreur export image');
     console.error(err);
   }finally{
-    document.body.removeChild(sheet);
+    if(sheet && sheet.parentNode) document.body.removeChild(sheet);
   }
 });
 
 document.getElementById('exportXlsBtn').addEventListener('click', async ()=>{
+  if(!requireCurrentRecord()) return;
   try{
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet(currentRecord.date.slice(0,31), {views:[{showGridLines:false}]});
@@ -1662,41 +1688,90 @@ document.getElementById('exportXlsBtn').addEventListener('click', async ()=>{
 });
 
 // ---------- Impression sur A4 (paysage, tableau jamais coupé) ----------
+let printInProgress = false;
 document.getElementById('printBtn').addEventListener('click', ()=>{
-  const sheet = buildExportSheet();
-  sheet.id = 'printSheet';
-  sheet.style.position = 'static';
-  sheet.style.left = 'auto';
-  sheet.style.top = 'auto';
-  sheet.style.width = '100%';
-  document.body.appendChild(sheet);
+  if(!requireCurrentRecord()) return;
+  if(printInProgress) return;
+  const old = document.getElementById('printSheet');
+  if(old) old.remove();
+  printInProgress = true;
+  let sheet;
+  try{
+    sheet = buildExportSheet();
+    sheet.id = 'printSheet';
+    sheet.style.position = 'static';
+    sheet.style.left = 'auto';
+    sheet.style.top = 'auto';
+    sheet.style.width = '100%';
+    document.body.appendChild(sheet);
+  }catch(err){
+    console.error(err);
+    toast("Erreur lors de la préparation de l'impression");
+    printInProgress = false;
+    return;
+  }
   const cleanup = ()=>{
-    if(sheet.parentNode) document.body.removeChild(sheet);
+    if(sheet && sheet.parentNode) document.body.removeChild(sheet);
     window.removeEventListener('afterprint', cleanup);
+    printInProgress = false;
   };
   window.addEventListener('afterprint', cleanup);
-  setTimeout(()=>{ window.print(); setTimeout(cleanup, 500); }, 50);
+  setTimeout(()=>{
+    try{
+      window.print();
+    }catch(err){
+      console.error(err);
+      toast("L'impression n'est pas disponible dans cette appli — utilise plutôt Exporter Image ou Exporter Excel, puis imprime depuis un navigateur.");
+    }
+    setTimeout(cleanup, 800);
+  }, 50);
 });
 
 // ---------- Import d'une fiche (.xlsx généré par l'application) ----------
 async function importFromXlsx(file){
-  const buf = await file.arrayBuffer();
+  let buf;
+  try{ buf = await file.arrayBuffer(); }
+  catch(e){ return {error:'read'}; }
+
   const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(buf);
+  try{ await wb.xlsx.load(buf); }
+  catch(e){ console.error(e); return {error:'format'}; }
+
   const ws = wb.worksheets[0];
-  if(!ws) return null;
+  if(!ws) return {error:'empty'};
+
   let raw = '';
   for(let i=1;i<=50;i++){
-    const cell = ws.getCell(i,20);
-    if(cell.value === null || cell.value === undefined || cell.value === '') break;
-    raw += cell.value;
+    let cell;
+    try{ cell = ws.getCell(i,20); }catch(e){ break; }
+    const v = cell ? cell.value : null;
+    if(v === null || v === undefined || v === '') break;
+    // Sécurité : si la cellule contient un objet (texte enrichi, formule...) au lieu d'une chaîne simple,
+    // on essaie d'en extraire le texte plutôt que de planter.
+    if(typeof v === 'string') raw += v;
+    else if(v && typeof v === 'object' && typeof v.text === 'string') raw += v.text;
+    else if(v && typeof v === 'object' && Array.isArray(v.richText)) raw += v.richText.map(t=>t.text||'').join('');
+    else break;
   }
-  if(!raw) return null;
+  if(!raw) return {error:'no-marker'};
+
   let data;
-  try{ data = JSON.parse(raw); }catch(e){ return null; }
-  if(!data || data.marker !== 'MAGASINIER_FICHE_V1' || !data.record) return null;
-  return data;
+  try{ data = JSON.parse(raw); }
+  catch(e){ return {error:'corrupt'}; }
+
+  if(!data || data.marker !== 'MAGASINIER_FICHE_V1' || !data.record || !data.record.date){
+    return {error:'no-marker'};
+  }
+  return {data};
 }
+
+const IMPORT_ERROR_MESSAGES = {
+  read: "Impossible de lire ce fichier.",
+  format: "Ce fichier n'est pas un fichier Excel (.xlsx) valide.",
+  empty: "Ce fichier Excel est vide.",
+  'no-marker': "Fichier refusé : il doit provenir de l'export Excel de cette application.",
+  corrupt: "Les données de ce fichier semblent corrompues — réexporte une nouvelle fois depuis l'application d'origine."
+};
 
 function openImagePreview(file){
   const url = URL.createObjectURL(file);
@@ -1711,50 +1786,83 @@ document.getElementById('imagePreviewCloseBtn').addEventListener('click', ()=>{
   if(overlay.dataset.url){ URL.revokeObjectURL(overlay.dataset.url); delete overlay.dataset.url; }
 });
 
+let importInProgress = false;
 document.getElementById('importBtn').addEventListener('click', ()=>{
+  if(importInProgress) return;
   document.getElementById('importFileInput').click();
 });
 document.getElementById('importFileInput').addEventListener('change', async e=>{
   const file = e.target.files[0];
   e.target.value = '';
   if(!file) return;
+  if(importInProgress) return;
+
+  const MAX_SIZE = 25 * 1024 * 1024; // 25 Mo, largement suffisant pour ce type de fichier
+  if(file.size > MAX_SIZE){
+    toast('Ce fichier est trop volumineux (max 25 Mo).');
+    return;
+  }
+
   const name = file.name.toLowerCase();
   if(name.endsWith('.xlsx')){
-    let data = null;
-    try{ data = await importFromXlsx(file); }catch(err){ console.error(err); }
-    if(!data){
-      toast("Fichier refusé : il doit provenir de l'export Excel de cette application.");
-      return;
-    }
-    const ok = await showConfirm(
-      'Importer cette fiche ?',
-      `Fiche du ${data.record.date} (N° ${data.record.numero}) — elle remplacera la fiche de cette date si elle existe déjà. Continuer ?`,
-      'Importer',
-      'Annuler'
-    );
-    if(!ok) return;
-    config = {...config, ...(data.config||{})};
-    document.getElementById('cfgAgence').value = config.agence||'';
-    document.getElementById('cfgNom').value = config.nom||'';
-    document.getElementById('cfgTel').value = config.tel||'';
-    document.getElementById('cfgEmail').value = config.email||'';
-    await saveConfig();
-    let productsChanged = false;
-    (data.record.rows||[]).forEach(row=>{
-      let p = products.find(pr=> (row.productId && pr.id===row.productId) || pr.name===row.product);
-      if(!p){
-        p = {id: row.productId || makeId(), name: row.product, unit: row.unit||''};
-        products.push(p);
-        productsChanged = true;
+    importInProgress = true;
+    const importBtn = document.getElementById('importBtn');
+    importBtn.disabled = true;
+    const prevLabel = importBtn.textContent;
+    importBtn.textContent = 'Import en cours…';
+    try{
+      const result = await importFromXlsx(file);
+      if(!result || result.error || !result.data){
+        toast((result && IMPORT_ERROR_MESSAGES[result.error]) || "Fichier refusé : il doit provenir de l'export Excel de cette application.");
+        return;
       }
-    });
-    if(productsChanged) await saveProducts();
-    currentRecord = data.record;
-    currentDate = currentRecord.date;
-    await saveFiche(currentRecord);
-    document.getElementById('dateInput').value = currentDate;
-    renderTable();
-    toast('Fiche importée avec succès ✅');
+      const data = result.data;
+      const ok = await showConfirm(
+        'Importer cette fiche ?',
+        `Fiche du ${data.record.date} (N° ${data.record.numero}) — elle remplacera la fiche de cette date si elle existe déjà. Continuer ?`,
+        'Importer',
+        'Annuler'
+      );
+      if(!ok) return;
+
+      try{
+        config = {...config, ...(data.config||{})};
+        document.getElementById('cfgAgence').value = config.agence||'';
+        document.getElementById('cfgNom').value = config.nom||'';
+        document.getElementById('cfgTel').value = config.tel||'';
+        document.getElementById('cfgEmail').value = config.email||'';
+        await saveConfig();
+
+        let productsChanged = false;
+        (Array.isArray(data.record.rows) ? data.record.rows : []).forEach(row=>{
+          if(!row || !row.product) return;
+          let p = products.find(pr=> (row.productId && pr.id===row.productId) || pr.name===row.product);
+          if(!p){
+            p = {id: row.productId || makeId(), name: row.product, unit: row.unit||''};
+            products.push(p);
+            productsChanged = true;
+          }
+        });
+        if(productsChanged) await saveProducts();
+
+        currentRecord = data.record;
+        currentDate = currentRecord.date;
+        await saveFiche(currentRecord);
+        document.getElementById('dateInput').value = currentDate;
+        renderTable();
+        toast('Fiche importée avec succès ✅');
+      }catch(err){
+        console.error(err);
+        toast("Erreur pendant l'enregistrement de la fiche importée.");
+      }
+    }catch(err){
+      console.error(err);
+      toast("Erreur inattendue pendant l'import.");
+    }finally{
+      importInProgress = false;
+      importBtn.disabled = false;
+      importBtn.textContent = prevLabel;
+    }
   } else if(name.endsWith('.png') || name.endsWith('.jpg') || name.endsWith('.jpeg')){
     openImagePreview(file);
   } else {
